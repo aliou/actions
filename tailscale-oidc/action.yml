@@ -1,0 +1,24 @@
+name: "tailscale-oidc"
+description: "Connect to Tailscale using a GitHub OIDC token exchanged for a short-lived Tailscale API token (no long-lived secret)."
+
+inputs:
+  oauth-client-id:
+    description: "Tailscale OAuth client ID (e.g. secrets.TS_OAUTH_CLIENT_ID)."
+    required: true
+  audience:
+    description: "OIDC audience configured on the Tailscale OAuth client (e.g. secrets.TS_AUDIENCE)."
+    required: true
+  tags:
+    description: "Comma-separated Tailscale ACL tags for the ephemeral node. Required even with a single tag: the action mints an ephemeral auth key via the API, and tags are a parameter of key creation."
+    required: false
+    default: "tag:ci-evals"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Connect to Tailscale
+      uses: tailscale/github-action@v4
+      with:
+        oauth-client-id: ${{ inputs.oauth-client-id }}
+        audience: ${{ inputs.audience }}
+        tags: ${{ inputs.tags }}
