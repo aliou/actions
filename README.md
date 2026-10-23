@@ -61,6 +61,32 @@ jobs:
       npm-scope: "@aliou" # optional, defaults to "@aliou"
 ```
 
+### `check-release.yml`
+
+Guard against releases that never made it to npm: staged publishing needs a
+manual 2FA approval, and a staged-but-never-approved version is invisible to
+`npm view`. Call this on a schedule; it checks that the latest `v*` tag is
+published, opens/updates a "npm release vX not published" issue when it isn't
+(including `npm stage list` output), closes the issue once it is, and fails the
+run so the scheduled failure shows up in notifications.
+
+```yaml
+on:
+  schedule:
+    - cron: "0 8,20 * * *" # 8am and 8pm UTC
+  workflow_dispatch:
+
+jobs:
+  check-release:
+    permissions:
+      contents: read
+      issues: write
+    uses: aliou/actions/.github/workflows/check-release.yml@main
+```
+
+`node-version`, `npm-scope`, and `package-name` (defaults to the root
+package.json name) are optional inputs.
+
 ### `check-pi-install.yml`
 
 Smoke-tests that a Pi extension package installs the way a user would

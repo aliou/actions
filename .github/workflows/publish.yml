@@ -95,17 +95,30 @@ jobs:
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           LOCAL_VERSION=$(node -p "require('./package.json').version")
-          REGISTRY_VERSION=$(npm view "$PACKAGE_NAME" version 2>/dev/null || echo "0.0.0")
-          if [ "$LOCAL_VERSION" != "$REGISTRY_VERSION" ]; then
+          # npm view can't see staged versions, so also check the staging area
+          # to avoid re-staging a version that's waiting for 2FA approval.
+          if npm view "$PACKAGE_NAME@$LOCAL_VERSION" version >/dev/null 2>&1; then
+            echo "needs_staging=false" >> "$GITHUB_OUTPUT"
+          elif npm stage list "$PACKAGE_NAME" 2>/dev/null | grep -q "$LOCAL_VERSION"; then
+            echo "needs_staging=false" >> "$GITHUB_OUTPUT"
+            echo "Version $LOCAL_VERSION is staged and awaiting approval."
+          else
             echo "needs_staging=true" >> "$GITHUB_OUTPUT"
             echo "version=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
-          else
-            echo "needs_staging=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Stage packages
         if: steps.check-publish.outputs.needs_staging == 'true'
-        run: npm stage publish
+        run: |
+          set -o pipefail
+          if ! npm stage publish 2>&1 | tee stage.log; then
+            # Another run may have staged the version in the meantime.
+            if grep -qE 'E409|previously published' stage.log; then
+              echo "Version already staged or published; nothing to do."
+              exit 0
+            fi
+            exit 1
+          fi
         env:
           NPM_CONFIG_PROVENANCE: true
 
@@ -116,6 +129,10 @@ jobs:
           VERSION: ${{ steps.check-publish.outputs.version }}
         run: |
           TAG="v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; skipping release creation."
+            exit 0
+          fi
           git tag "$TAG"
           git push origin "$TAG"
           if ! gh release view "$TAG" >/dev/null 2>&1; then

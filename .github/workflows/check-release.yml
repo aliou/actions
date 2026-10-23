@@ -1,0 +1,122 @@
+name: check-release
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to install."
+        required: false
+        type: string
+        default: "24"
+      npm-scope:
+        description: "npm scope used for registry auth (e.g. @aliou)."
+        required: false
+        type: string
+        default: "@aliou"
+      package-name:
+        description: "Package to check. Defaults to the root package.json name."
+        required: false
+        type: string
+
+jobs:
+  check-release:
+    name: Check release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: "https://registry.npmjs.org"
+          scope: ${{ inputs.npm-scope }}
+
+      - name: Upgrade npm for stage publish support
+        run: npm install -g npm@latest
+
+      - name: Check latest release is on npm
+        id: check
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+        run: |
+          PACKAGE_NAME=${PACKAGE_NAME:-$(node -p "require('./package.json').name")}
+          TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          if [ -z "$TAG" ]; then
+            echo "No v* tags found; nothing released yet."
+            exit 0
+          fi
+          VERSION=${TAG#v}
+          echo "package=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          STAGE_INFO=$(npm stage list "$PACKAGE_NAME" 2>&1 || true)
+          {
+            echo "stage-info<<EOF"
+            echo "$STAGE_INFO"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update issue
+        if: steps.check.outputs.published == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE: ${{ steps.check.outputs.package }}
+          VERSION: ${{ steps.check.outputs.version }}
+          STAGE_INFO: ${{ steps.check.outputs.stage-info }}
+        run: |
+          TITLE="npm release v$VERSION not published"
+          BODY=$(cat <<BODY
+          \`$PACKAGE@$VERSION\` has a \`v$VERSION\` tag and GitHub release but is not on the npm registry.
+
+          Staged publishing requires a manual 2FA approval. Approve it with:
+
+          \`\`\`
+          npm stage list $PACKAGE
+          npm stage approve <stage-id>
+          \`\`\`
+
+          or via the **Staged Packages** tab on npmjs.com.
+
+          <details><summary>npm stage list output</summary>
+
+          \`\`\`
+          $STAGE_INFO
+          \`\`\`
+          </details>
+
+          This issue closes automatically once the version is published.
+          BODY
+          )
+          ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "npm release not published in:title" --json number --jq '.[0].number')
+          if [ -n "$ISSUE" ]; then
+            gh issue edit "$ISSUE" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Close resolved issues
+        if: steps.check.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "npm release not published in:title" --json number --jq '.[0].number')
+          if [ -n "$ISSUE" ]; then
+            gh issue close "$ISSUE" --comment "Published; closing."
+          fi
+
+      - name: Fail if unpublished
+        if: steps.check.outputs.published == 'false'
+        run: |
+          echo "::error::${{ steps.check.outputs.package }}@${{ steps.check.outputs.version }} has a GitHub release but is not published on npm (staged and awaiting 2FA approval?)."
+          exit 1
